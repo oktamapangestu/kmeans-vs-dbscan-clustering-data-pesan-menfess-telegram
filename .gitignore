@@ -1,0 +1,15 @@
+.env
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+*.session
+*.session-journal
+data/raw/media/
+data/processed/
+reports/
+archive/
+resources/auto_stopwords.txt
