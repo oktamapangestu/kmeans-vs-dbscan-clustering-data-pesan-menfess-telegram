@@ -1,6 +1,7 @@
 import subprocess
 import sys
 from pathlib import Path
+import re
 
 import pandas as pd
 import streamlit as st
@@ -16,6 +17,40 @@ from project_paths import DATA_PROCESSED_DIR, DATA_RAW_DIR, REPORTS_DIR, RESOURC
 
 
 st.set_page_config(page_title="Text Clustering Dashboard", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .metric-card {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #dbe4f0;
+        border-radius: 16px;
+        padding: 18px 20px;
+        min-height: 132px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+    .metric-label {
+        color: #475569;
+        font-size: 0.95rem;
+        font-weight: 600;
+        margin-bottom: 10px;
+    }
+    .metric-value {
+        color: #0f172a;
+        font-size: 2.2rem;
+        font-weight: 700;
+        line-height: 1.15;
+        word-break: break-word;
+    }
+    .metric-hint {
+        color: #64748b;
+        font-size: 0.88rem;
+        margin-top: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def csv_candidates() -> list[str]:
@@ -50,6 +85,42 @@ def load_report_text(path: str) -> str:
     if not report_path.exists():
         return ""
     return report_path.read_text(encoding="utf-8")
+
+
+def parse_report_metrics(report_text: str) -> dict[str, str]:
+    metrics: dict[str, str] = {}
+    if not report_text:
+        return metrics
+
+    for raw_line in report_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("==="):
+            continue
+
+        if line.startswith("Rows used:"):
+            metrics["Rows Used"] = line.removeprefix("Rows used:").strip()
+        elif line.startswith("embedding_model="):
+            metrics["Embedding Model"] = line.split("=", 1)[1].strip()
+        elif line.startswith("k="):
+            metrics["KMeans Config"] = line
+        elif line.startswith("eps="):
+            metrics["DBSCAN Config"] = line
+        elif line.startswith("clusters="):
+            match = re.search(r"clusters=(\d+)\s+noise_points=(\d+)\s+noise_rate=([0-9.]+)", line)
+            if match:
+                metrics["Clusters"] = match.group(1)
+                metrics["Noise Points"] = match.group(2)
+                metrics["Noise Rate"] = f"{float(match.group(3)):.2%}"
+        elif line.startswith("filter_passes="):
+            metrics["Filter Passes"] = line
+        elif line.startswith("inertia="):
+            metrics["Inertia"] = line.split("=", 1)[1].strip()
+        elif line.startswith("silhouette_cosine"):
+            metrics["Silhouette"] = line.rsplit("=", 1)[1].strip()
+        elif line.startswith("davies_bouldin"):
+            metrics["Davies-Bouldin"] = line.split("=", 1)[1].split()[0].strip()
+
+    return metrics
 
 
 def summarize_result(path: str) -> tuple[pd.DataFrame | None, dict[str, int | float]]:
@@ -89,9 +160,31 @@ def cluster_chart_data(df: pd.DataFrame | None) -> pd.DataFrame:
     return chart_df
 
 
+def render_metric_cards(report_metrics: dict[str, str]) -> None:
+    cards = [
+        ("Silhouette", report_metrics.get("Silhouette", "-"), "Range -1 to 1, closer to 1 better"),
+        ("Davies-Bouldin", report_metrics.get("Davies-Bouldin", "-"), "Range 0+, lower better"),
+    ]
+
+    cols = st.columns(2)
+    for col, (label, value, hint) in zip(cols, cards, strict=False):
+        col.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value">{value}</div>
+                <div class="metric-hint">{hint}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_result(title: str, output_path: str, report_path: str) -> None:
     st.subheader(title)
     df, summary = summarize_result(output_path)
+    report_text = load_report_text(report_path)
+    report_metrics = parse_report_metrics(report_text)
     if df is None:
         st.info(f"Belum ada output di `{output_path}`")
         return
@@ -104,6 +197,27 @@ def render_result(title: str, output_path: str, report_path: str) -> None:
     if "noise_rate" in summary:
         st.caption(f"Noise rate: {summary['noise_rate']:.2%}")
 
+    if report_metrics:
+        st.markdown("**Metrics**")
+        render_metric_cards(report_metrics)
+
+        info_items = []
+        for key in [
+            "Rows Used",
+            "Embedding Model",
+            "KMeans Config",
+            "DBSCAN Config",
+            "Clusters",
+            "Noise Points",
+            "Noise Rate",
+            "Filter Passes",
+            "Inertia",
+        ]:
+            if key in report_metrics:
+                info_items.append({"Metric": key, "Value": report_metrics[key]})
+        if info_items:
+            st.dataframe(pd.DataFrame(info_items), hide_index=True, use_container_width=True)
+
     chart_df = cluster_chart_data(df)
     if not chart_df.empty:
         st.bar_chart(chart_df.set_index("cluster"))
@@ -111,7 +225,6 @@ def render_result(title: str, output_path: str, report_path: str) -> None:
     with st.expander("Preview hasil CSV", expanded=False):
         st.dataframe(df.head(100), use_container_width=True)
 
-    report_text = load_report_text(report_path)
     with st.expander("Report text", expanded=False):
         if report_text:
             st.code(report_text)

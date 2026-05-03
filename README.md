@@ -257,8 +257,6 @@ Hasil clustering disimpan sebagai:
 Metric yang biasa muncul di report:
 - `silhouette_cosine`
 - `davies_bouldin`
-- `calinski_harabasz`
-- `stability_ari_*` untuk KMeans
 - `noise_rate` untuk DBSCAN
 
 Catatan penting:

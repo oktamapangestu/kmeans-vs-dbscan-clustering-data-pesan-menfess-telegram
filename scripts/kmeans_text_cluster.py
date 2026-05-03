@@ -14,8 +14,6 @@ from fastembed import TextEmbedding
 from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import (
-    adjusted_rand_score,
-    calinski_harabasz_score,
     davies_bouldin_score,
     silhouette_score,
 )
@@ -185,9 +183,6 @@ class EvalResult:
     inertia: float
     silhouette_cosine: float | None
     davies_bouldin: float
-    calinski_harabasz: float
-    stability_ari_mean: float | None
-    stability_ari_std: float | None
 
 
 def fit_kmeans_model(X: np.ndarray, *, k: int, random_state: int):
@@ -205,11 +200,8 @@ def evaluate(
     inertia: float,
     sample_size: int,
     random_state: int,
-    stability_seeds: list[int] | None,
-    kmeans_params: dict,
 ) -> EvalResult:
     dbi = float(davies_bouldin_score(X, labels))
-    ch = float(calinski_harabasz_score(X, labels))
 
     sil = None
     n = X.shape[0]
@@ -220,25 +212,10 @@ def evaluate(
             idx = rng.choice(n, size=ssz, replace=False)
             sil = float(silhouette_score(X[idx], labels[idx], metric="cosine"))
 
-    ari_mean = ari_std = None
-    if stability_seeds:
-        base = labels
-        aris: list[float] = []
-        for seed in stability_seeds:
-            km = KMeans(random_state=seed, **kmeans_params)
-            lab = km.fit_predict(X)
-            aris.append(float(adjusted_rand_score(base, lab)))
-        if aris:
-            ari_mean = float(np.mean(aris))
-            ari_std = float(np.std(aris))
-
     return EvalResult(
         inertia=float(inertia),
         silhouette_cosine=sil,
         davies_bouldin=dbi,
-        calinski_harabasz=ch,
-        stability_ari_mean=ari_mean,
-        stability_ari_std=ari_std,
     )
 
 
@@ -444,7 +421,6 @@ def main():
     ap.add_argument("--random-state", type=int, default=42, help="Random seed")
     ap.add_argument("--filter-passes", type=int, default=0, help="How many times to remove clusters smaller than --min-cluster-size before final clustering")
     ap.add_argument("--min-cluster-size", type=int, default=0, help="Treat clusters with size < this as noise during filtering passes (0 disables)")
-    ap.add_argument("--stability-seeds", default="7,13,21,37,101", help="Comma-separated seeds for stability ARI")
     ap.add_argument("--top-terms", type=int, default=15, help="Top report terms per cluster")
     ap.add_argument("--examples", type=int, default=5, help="Example texts per cluster")
     ap.add_argument("--output-csv", default=str(DATA_PROCESSED_DIR / "export_clustered.csv"), help="Output CSV with cluster labels")
@@ -527,18 +503,12 @@ def main():
     final_texts = [cleaned2[i] for i in final_idx]
     km, labels, kmeans_params, actual_k = fit_kmeans_model(X, k=args.k, random_state=args.random_state)
 
-    stability_seeds = None
-    if args.stability_seeds.strip():
-        stability_seeds = [int(x.strip()) for x in args.stability_seeds.split(",") if x.strip()]
-
     ev = evaluate(
         X,
         labels,
         inertia=float(km.inertia_),
         sample_size=args.sample_size,
         random_state=args.random_state,
-        stability_seeds=stability_seeds,
-        kmeans_params=kmeans_params,
     )
 
     df2.loc[df2.index[final_idx], "cluster"] = labels
@@ -582,11 +552,6 @@ def main():
         else:
             f.write("silhouette_cosine=NA\n")
         f.write(f"davies_bouldin={ev.davies_bouldin:.4f} (lower better)\n")
-        f.write(f"calinski_harabasz={ev.calinski_harabasz:.4f} (higher better)\n")
-        if ev.stability_ari_mean is not None:
-            f.write(f"stability_ari_mean={ev.stability_ari_mean:.4f} std={ev.stability_ari_std:.4f}\n")
-        else:
-            f.write("stability_ari=disabled\n")
         f.write("\n")
 
         if filter_history:
