@@ -3,7 +3,7 @@ import shlex
 import subprocess
 import sys
 
-from cluster_commands import build_dbscan_command, build_kmeans_command
+from cluster_commands import build_dbscan_command, build_hdbscan_command, build_kmeans_command
 from project_paths import DATA_PROCESSED_DIR, DATA_RAW_DIR, REPORTS_DIR
 
 
@@ -41,6 +41,13 @@ def main() -> int:
     ap.add_argument("--dbscan-report", default=str(REPORTS_DIR / "dbscan_cluster_report.txt"), help="Report path for DBSCAN")
     ap.add_argument("--dbscan-extra", default="", help="Extra raw arguments appended to dbscan_text_cluster.py")
 
+    ap.add_argument("--hdbscan-min-cluster-size", type=int, default=15, help="Minimum cluster size for HDBSCAN")
+    ap.add_argument("--hdbscan-min-samples", type=int, default=5, help="min_samples for HDBSCAN")
+    ap.add_argument("--hdbscan-cluster-selection-epsilon", type=float, default=0.0, help="cluster_selection_epsilon for HDBSCAN")
+    ap.add_argument("--hdbscan-output", default=str(DATA_PROCESSED_DIR / "export_hdbscan_clustered.csv"), help="Output CSV path for HDBSCAN")
+    ap.add_argument("--hdbscan-report", default=str(REPORTS_DIR / "hdbscan_cluster_report.txt"), help="Report path for HDBSCAN")
+    ap.add_argument("--hdbscan-extra", default="", help="Extra raw arguments appended to hdbscan_text_cluster.py")
+
     ap.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
     args = ap.parse_args()
 
@@ -49,9 +56,11 @@ def main() -> int:
 
     kmeans_cmd = build_kmeans_command(python_bin, config)
     dbscan_cmd = build_dbscan_command(python_bin, config)
+    hdbscan_cmd = build_hdbscan_command(python_bin, config)
 
     run_command("KMeans", kmeans_cmd, dry_run=args.dry_run)
     run_command("DBSCAN", dbscan_cmd, dry_run=args.dry_run)
+    run_command("HDBSCAN", hdbscan_cmd, dry_run=args.dry_run)
     return 0
 
 

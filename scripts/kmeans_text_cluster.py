@@ -3,8 +3,10 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 import warnings
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +21,12 @@ from sklearn.metrics import (
 )
 
 from project_paths import (
+    CACHE_DIR,
     DATA_PROCESSED_DIR,
     DATA_RAW_DIR,
     REPORTS_DIR,
     RESOURCES_DIR,
+    ensure_dir,
     ensure_parent_dir,
 )
 from text_dataset import prepare_text_dataset
@@ -31,6 +35,22 @@ from text_dataset import prepare_text_dataset
 _URL_RE = re.compile(r"https?://\S+|www\.[^\s]+", re.IGNORECASE)
 _MENTION_RE = re.compile(r"@\w+")
 _HASHTAG_RE = re.compile(r"#[-\w]+")
+_DASH_SEPARATOR_RE = re.compile(r"(?:^|\s)---+(?=\s|$)")
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F1E0-\U0001F1FF"
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\U00002700-\U000027BF"
+    "]+",
+    re.UNICODE,
+)
 _NON_WORD_RE = re.compile(r"[^0-9a-zA-Z\s]+")
 _MULTISPACE_RE = re.compile(r"\s+")
 _ELONGATED_END_RE = re.compile(r"([a-zA-Z])\1+$")
@@ -42,6 +62,8 @@ _BOILERPLATE_PATTERNS = [
 ]
 
 DEFAULT_STOPWORDS_FILE = RESOURCES_DIR / "stopword.txt"
+DEFAULT_FASTEMBED_CACHE_DIR = CACHE_DIR / "fastembed"
+DEFAULT_HF_CACHE_DIR = CACHE_DIR / "huggingface"
 
 _EMBEDDING_MODEL_ALIASES = {
     "intfloat/multilingual-e5-base": "intfloat/multilingual-e5-large",
@@ -97,6 +119,50 @@ def clean_text(s: str) -> str:
     s = normalize_elongated_words(s)
     s = normalize_tokens(s)
     return s
+
+
+def clean_text_for_embedding(
+    s: str,
+    *,
+    remove_hashtags: bool = True,
+    remove_emojis: bool = False,
+) -> str:
+    return embedding_preprocessing_steps(
+        s,
+        remove_hashtags=remove_hashtags,
+        remove_emojis=remove_emojis,
+    )["final_text"]
+
+
+def embedding_preprocessing_steps(
+    s: str,
+    *,
+    remove_hashtags: bool = True,
+    remove_emojis: bool = False,
+) -> dict[str, str]:
+    if not isinstance(s, str):
+        s = "" if s is None else str(s)
+
+    unicode_normalized = unicodedata.normalize("NFKC", s)
+    whitespace_normalized = unicode_normalized.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    url_normalized = _URL_RE.sub(" [URL] ", whitespace_normalized)
+    mention_normalized = _MENTION_RE.sub(" [MENTION] ", url_normalized)
+    hashtag_normalized = _HASHTAG_RE.sub(" ", mention_normalized) if remove_hashtags else mention_normalized
+    dash_separator_normalized = _DASH_SEPARATOR_RE.sub(" ", hashtag_normalized)
+    emoji_normalized = _EMOJI_RE.sub(" ", dash_separator_normalized) if remove_emojis else dash_separator_normalized
+    final_text = _MULTISPACE_RE.sub(" ", emoji_normalized).strip()
+
+    return {
+        "raw_text": s,
+        "unicode_normalized": unicode_normalized,
+        "whitespace_normalized": whitespace_normalized,
+        "url_normalized": url_normalized,
+        "mention_normalized": mention_normalized,
+        "hashtag_normalized": hashtag_normalized,
+        "dash_separator_normalized": dash_separator_normalized,
+        "emoji_normalized": emoji_normalized,
+        "final_text": final_text,
+    }
 
 
 def normalize_elongated_words(text: str) -> str:
@@ -265,6 +331,7 @@ def exemplar_texts(X: np.ndarray, labels: np.ndarray, km: KMeans, texts: list[st
 
 
 def load_embedding_model(name: str, *, device: str):
+    configure_embedding_cache()
     resolved_name = _EMBEDDING_MODEL_ALIASES.get(name, name)
     if resolved_name != name:
         warnings.warn(
@@ -280,6 +347,9 @@ def load_embedding_model(name: str, *, device: str):
     try:
         return TextEmbedding(model_name=resolved_name, cuda=cuda)
     except Exception as exc:
+        if _is_no_space_error(exc):
+            raise RuntimeError(_build_disk_full_message(resolved_name, backend="fastembed")) from exc
+
         if _is_unavailable_cuda_provider(exc):
             return TextEmbedding(model_name=resolved_name, cuda=False)
 
@@ -300,6 +370,16 @@ def _supports_fastembed_model(name: str) -> bool:
     return any(model.get("model", "").lower() == name.lower() for model in TextEmbedding.list_supported_models())
 
 
+def configure_embedding_cache() -> None:
+    if not os.getenv("FASTEMBED_CACHE_PATH"):
+        ensure_dir(DEFAULT_FASTEMBED_CACHE_DIR)
+        os.environ["FASTEMBED_CACHE_PATH"] = str(DEFAULT_FASTEMBED_CACHE_DIR)
+
+    if not os.getenv("HF_HOME"):
+        ensure_dir(DEFAULT_HF_CACHE_DIR)
+        os.environ["HF_HOME"] = str(DEFAULT_HF_CACHE_DIR)
+
+
 def load_sentence_transformer_model(name: str, *, device: str):
     try:
         from sentence_transformers import SentenceTransformer
@@ -309,7 +389,22 @@ def load_sentence_transformer_model(name: str, *, device: str):
         ) from exc
 
     target_device = device or None
-    return SentenceTransformer(name, device=target_device)
+    try:
+        return SentenceTransformer(name, device=target_device)
+    except Exception as exc:
+        if _is_no_space_error(exc):
+            raise RuntimeError(_build_disk_full_message(name, backend="sentence-transformers")) from exc
+        raise
+
+
+def _build_disk_full_message(model_name: str, *, backend: str) -> str:
+    cache_env = "FASTEMBED_CACHE_PATH" if backend == "fastembed" else "HF_HOME"
+    cache_default = tempfile.gettempdir() if backend == "fastembed" else str(Path.home() / ".cache" / "huggingface")
+    return (
+        f"Failed to download embedding model '{model_name}' because disk space is exhausted. "
+        f"Free up disk space, or point {cache_env} to a location with enough space, then rerun. "
+        f"Current default cache root is '{cache_default}'."
+    )
 
 
 def _is_missing_fastembed_model_file(exc: Exception) -> bool:
@@ -333,6 +428,11 @@ def _is_missing_fastembed_model_file(exc: Exception) -> bool:
 def _is_unavailable_cuda_provider(exc: Exception) -> bool:
     msg = str(exc)
     return "CUDAExecutionProvider" in msg and "is not available" in msg
+
+
+def _is_no_space_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return "No space left on device" in msg or "Not enough free disk space" in msg
 
 
 def clear_fastembed_model_cache(name: str) -> bool:
@@ -404,6 +504,8 @@ def main():
     ap.add_argument("--embedding-model", default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", help="Sentence-BERT-compatible model name supported by fastembed or sentence-transformers")
     ap.add_argument("--batch-size", type=int, default=64, help="Embedding batch size")
     ap.add_argument("--device", default="", help="Device for sentence-transformers, e.g. cpu, mps, cuda")
+    ap.add_argument("--keep-hashtags", action="store_true", help="Keep hashtags in embedding preprocessing")
+    ap.add_argument("--remove-emojis", action="store_true", help="Remove emojis in embedding preprocessing")
 
     # Kept for report keyword extraction, not for clustering.
     ap.add_argument("--max-features", type=int, default=10000, help="TF-IDF max features for report top terms")
@@ -439,9 +541,15 @@ def main():
         random_state=args.random_state,
         clean_col=args.clean_col,
         clean_text=clean_text,
+        clean_text_embed=partial(
+            clean_text_for_embedding,
+            remove_hashtags=(not args.keep_hashtags),
+            remove_emojis=args.remove_emojis,
+        ),
     )
     df2 = prepared.df
     cleaned2 = prepared.cleaned_texts
+    cleaned_embed = prepared.cleaned_texts_embed
     dedup_removed = prepared.dedup_removed
 
     stop_set = load_stopwords(args.stopwords if args.stopwords else None, use_default=(not args.no_default_stopwords)) or set()
@@ -461,7 +569,7 @@ def main():
     stop_words = sorted(stop_set) if stop_set else None
 
     model = load_embedding_model(args.embedding_model, device=args.device)
-    embeddings_all = encode_texts(model, cleaned2, batch_size=args.batch_size)
+    embeddings_all = encode_texts(model, cleaned_embed, batch_size=args.batch_size)
 
     df2["cluster"] = -1
     df2["filtered_out"] = False

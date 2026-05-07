@@ -12,7 +12,8 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from cluster_commands import build_dbscan_command, build_kmeans_command
+from cluster_commands import build_dbscan_command, build_hdbscan_command, build_kmeans_command
+from kmeans_text_cluster import clean_text, clean_text_for_embedding, embedding_preprocessing_steps
 from project_paths import DATA_PROCESSED_DIR, DATA_RAW_DIR, REPORTS_DIR, RESOURCES_DIR
 
 
@@ -69,6 +70,50 @@ def detect_columns(path: str) -> list[str]:
     return list(df.columns)
 
 
+def build_preprocessing_preview(
+    path: str,
+    text_col: str,
+    *,
+    rows: int,
+    remove_hashtags: bool,
+    remove_emojis: bool,
+) -> pd.DataFrame | None:
+    try:
+        df = pd.read_csv(path, usecols=[text_col], nrows=rows)
+    except Exception:
+        return None
+
+    if text_col not in df.columns:
+        return None
+
+    preview = df.copy()
+    preview[text_col] = preview[text_col].fillna("").astype(str)
+    preview = preview.rename(columns={text_col: "raw_text"})
+    preview["clean_text"] = preview["raw_text"].map(clean_text)
+    step_rows = preview["raw_text"].map(
+        lambda text: embedding_preprocessing_steps(
+            text,
+            remove_hashtags=remove_hashtags,
+            remove_emojis=remove_emojis,
+        )
+    ).tolist()
+    step_df = pd.DataFrame(step_rows)
+    step_df = step_df.rename(
+        columns={
+            "raw_text": "embedding_raw_text",
+            "unicode_normalized": "step_1_unicode_normalized",
+            "whitespace_normalized": "step_2_whitespace_normalized",
+            "url_normalized": "step_3_url_normalized",
+            "mention_normalized": "step_4_mention_normalized",
+            "hashtag_normalized": "step_5_hashtag_normalized",
+            "dash_separator_normalized": "step_6_dash_separator_normalized",
+            "emoji_normalized": "step_7_emoji_normalized",
+            "final_text": "step_8_final_embedding_text",
+        }
+    )
+    return pd.concat([preview, step_df.drop(columns=["embedding_raw_text"])], axis=1)
+
+
 def run_command(command: list[str]) -> tuple[int, str]:
     result = subprocess.run(
         command,
@@ -105,6 +150,8 @@ def parse_report_metrics(report_text: str) -> dict[str, str]:
             metrics["KMeans Config"] = line
         elif line.startswith("eps="):
             metrics["DBSCAN Config"] = line
+        elif line.startswith("min_cluster_size="):
+            metrics["HDBSCAN Config"] = line
         elif line.startswith("clusters="):
             match = re.search(r"clusters=(\d+)\s+noise_points=(\d+)\s+noise_rate=([0-9.]+)", line)
             if match:
@@ -207,6 +254,7 @@ def render_result(title: str, output_path: str, report_path: str) -> None:
             "Embedding Model",
             "KMeans Config",
             "DBSCAN Config",
+            "HDBSCAN Config",
             "Clusters",
             "Noise Points",
             "Noise Rate",
@@ -233,7 +281,7 @@ def render_result(title: str, output_path: str, report_path: str) -> None:
 
 
 st.title("Text Clustering Dashboard")
-st.caption("Atur parameter, jalankan KMeans/DBSCAN, lalu lihat hasil dan grafik cluster dari browser.")
+st.caption("Atur parameter, jalankan KMeans/DBSCAN/HDBSCAN, lalu lihat hasil dan grafik cluster dari browser.")
 
 available_inputs = csv_candidates()
 default_input = str(DATA_RAW_DIR / "export.csv")
@@ -255,6 +303,7 @@ min_words = st.sidebar.number_input("Min words", min_value=0, value=5)
 limit = st.sidebar.number_input("Limit rows", min_value=0, value=1000)
 limit_random = st.sidebar.checkbox("Random sampling saat limit", value=True)
 drop_duplicate_texts = st.sidebar.checkbox("Drop duplicate cleaned texts", value=True)
+preview_rows = st.sidebar.number_input("Preview rows preprocessing", min_value=1, max_value=50, value=10)
 batch_size = st.sidebar.number_input("Batch size", min_value=1, value=64)
 sample_size = st.sidebar.number_input("Sample size metric", min_value=2, value=1000)
 embedding_model = st.sidebar.text_input(
@@ -262,21 +311,41 @@ embedding_model = st.sidebar.text_input(
     value="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 )
 device = st.sidebar.text_input("Device", value="")
+keep_hashtags = st.sidebar.checkbox("Keep hashtag di embedding", value=False)
+remove_emojis = st.sidebar.checkbox("Hapus emoji di embedding", value=False)
 stopwords = st.sidebar.text_input("Stopwords path", value=str(RESOURCES_DIR / "stopword.txt"))
 no_default_stopwords = st.sidebar.checkbox("Disable default stopwords", value=False)
 
 st.sidebar.header("KMeans")
-k = st.sidebar.number_input("Jumlah cluster (k)", min_value=1, value=10)
+k = st.sidebar.number_input("Jumlah cluster (k)", min_value=1, value=5)
 kmeans_output = st.sidebar.text_input("Output CSV KMeans", value=str(DATA_PROCESSED_DIR / "export_clustered.csv"))
 kmeans_report = st.sidebar.text_input("Report KMeans", value=str(REPORTS_DIR / "cluster_report.txt"))
 kmeans_extra = st.sidebar.text_input("Extra args KMeans", value="")
 
 st.sidebar.header("DBSCAN")
-eps = st.sidebar.number_input("eps", min_value=0.0, value=0.22, step=0.01, format="%.2f")
+eps = st.sidebar.number_input("eps", min_value=0.0, value=0.35, step=0.01, format="%.2f")
 min_samples = st.sidebar.number_input("min_samples", min_value=1, value=5)
+dbscan_use_umap = st.sidebar.checkbox("Use UMAP for DBSCAN (fallback PCA)", value=False)
+dbscan_umap_components = st.sidebar.number_input("DBSCAN UMAP components", min_value=2, value=10)
+dbscan_umap_neighbors = st.sidebar.number_input("DBSCAN UMAP neighbors", min_value=2, value=15)
+dbscan_umap_min_dist = st.sidebar.number_input("DBSCAN UMAP min_dist", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+st.sidebar.caption("Kalau paket UMAP belum tersedia di environment, toggle ini otomatis pakai PCA sebagai fallback.")
 dbscan_output = st.sidebar.text_input("Output CSV DBSCAN", value=str(DATA_PROCESSED_DIR / "export_dbscan_clustered.csv"))
 dbscan_report = st.sidebar.text_input("Report DBSCAN", value=str(REPORTS_DIR / "dbscan_cluster_report.txt"))
 dbscan_extra = st.sidebar.text_input("Extra args DBSCAN", value="")
+
+st.sidebar.header("HDBSCAN")
+hdbscan_min_cluster_size = st.sidebar.number_input("HDBSCAN min_cluster_size", min_value=2, value=8)
+hdbscan_min_samples = st.sidebar.number_input("HDBSCAN min_samples", min_value=1, value=2)
+hdbscan_cluster_selection_epsilon = st.sidebar.number_input("HDBSCAN cluster_selection_epsilon", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+hdbscan_use_umap = st.sidebar.checkbox("Use UMAP for HDBSCAN (fallback PCA)", value=False)
+hdbscan_umap_components = st.sidebar.number_input("HDBSCAN UMAP components", min_value=2, value=10)
+hdbscan_umap_neighbors = st.sidebar.number_input("HDBSCAN UMAP neighbors", min_value=2, value=15)
+hdbscan_umap_min_dist = st.sidebar.number_input("HDBSCAN UMAP min_dist", min_value=0.0, value=0.0, step=0.01, format="%.2f")
+st.sidebar.caption("HDBSCAN juga akan otomatis pakai PCA kalau UMAP belum terinstall.")
+hdbscan_output = st.sidebar.text_input("Output CSV HDBSCAN", value=str(DATA_PROCESSED_DIR / "export_hdbscan_clustered.csv"))
+hdbscan_report = st.sidebar.text_input("Report HDBSCAN", value=str(REPORTS_DIR / "hdbscan_cluster_report.txt"))
+hdbscan_extra = st.sidebar.text_input("Extra args HDBSCAN", value="")
 
 config = {
     "input": input_path,
@@ -290,6 +359,8 @@ config = {
     "sample_size": int(sample_size),
     "embedding_model": embedding_model,
     "device": device,
+    "keep_hashtags": keep_hashtags,
+    "remove_emojis": remove_emojis,
     "stopwords": stopwords,
     "no_default_stopwords": no_default_stopwords,
     "k": int(k),
@@ -298,31 +369,49 @@ config = {
     "kmeans_extra": kmeans_extra,
     "eps": float(eps),
     "min_samples": int(min_samples),
+    "dbscan_use_umap": dbscan_use_umap,
+    "dbscan_umap_components": int(dbscan_umap_components),
+    "dbscan_umap_neighbors": int(dbscan_umap_neighbors),
+    "dbscan_umap_min_dist": float(dbscan_umap_min_dist),
     "dbscan_output": dbscan_output,
     "dbscan_report": dbscan_report,
     "dbscan_extra": dbscan_extra,
+    "hdbscan_min_cluster_size": int(hdbscan_min_cluster_size),
+    "hdbscan_min_samples": int(hdbscan_min_samples),
+    "hdbscan_cluster_selection_epsilon": float(hdbscan_cluster_selection_epsilon),
+    "hdbscan_use_umap": hdbscan_use_umap,
+    "hdbscan_umap_components": int(hdbscan_umap_components),
+    "hdbscan_umap_neighbors": int(hdbscan_umap_neighbors),
+    "hdbscan_umap_min_dist": float(hdbscan_umap_min_dist),
+    "hdbscan_output": hdbscan_output,
+    "hdbscan_report": hdbscan_report,
+    "hdbscan_extra": hdbscan_extra,
 }
 
 python_bin = sys.executable
 kmeans_command = build_kmeans_command(python_bin, config)
 dbscan_command = build_dbscan_command(python_bin, config)
+hdbscan_command = build_hdbscan_command(python_bin, config)
 
 st.subheader("Run")
-button_col1, button_col2, button_col3 = st.columns(3)
+button_col1, button_col2, button_col3, button_col4 = st.columns(4)
 run_kmeans = button_col1.button("Run KMeans", use_container_width=True)
 run_dbscan = button_col2.button("Run DBSCAN", use_container_width=True)
-run_both = button_col3.button("Run Both", use_container_width=True)
+run_hdbscan = button_col3.button("Run HDBSCAN", use_container_width=True)
+run_all = button_col4.button("Run All", use_container_width=True)
 
 log_placeholder = st.empty()
 
-if run_kmeans or run_dbscan or run_both:
+if run_kmeans or run_dbscan or run_hdbscan or run_all:
     commands: list[tuple[str, list[str]]] = []
     if run_kmeans:
         commands.append(("KMeans", kmeans_command))
     if run_dbscan:
         commands.append(("DBSCAN", dbscan_command))
-    if run_both:
-        commands.extend([("KMeans", kmeans_command), ("DBSCAN", dbscan_command)])
+    if run_hdbscan:
+        commands.append(("HDBSCAN", hdbscan_command))
+    if run_all:
+        commands.extend([("KMeans", kmeans_command), ("DBSCAN", dbscan_command), ("HDBSCAN", hdbscan_command)])
 
     output_blocks: list[str] = []
     had_error = False
@@ -344,14 +433,32 @@ if run_kmeans or run_dbscan or run_both:
             st.code(block)
 
 st.subheader("Command Preview")
-preview_tab1, preview_tab2 = st.tabs(["KMeans", "DBSCAN"])
+preview_tab1, preview_tab2, preview_tab3 = st.tabs(["KMeans", "DBSCAN", "HDBSCAN"])
 with preview_tab1:
     st.code(" ".join(kmeans_command))
 with preview_tab2:
     st.code(" ".join(dbscan_command))
+with preview_tab3:
+    st.code(" ".join(hdbscan_command))
 
-result_tab1, result_tab2 = st.tabs(["Hasil KMeans", "Hasil DBSCAN"])
+st.subheader("Preview Preprocessing")
+st.caption("Panel ini menampilkan teks asli, preprocessing umum untuk filtering/report, dan hasil tiap tahap preprocessing embedding yang menjaga makna pesan.")
+preprocess_preview = build_preprocessing_preview(
+    input_path,
+    text_col,
+    rows=int(preview_rows),
+    remove_hashtags=(not keep_hashtags),
+    remove_emojis=remove_emojis,
+)
+if preprocess_preview is None:
+    st.info("Preview preprocessing belum tersedia. Pastikan file input dan kolom teks valid.")
+else:
+    st.dataframe(preprocess_preview, use_container_width=True)
+
+result_tab1, result_tab2, result_tab3 = st.tabs(["Hasil KMeans", "Hasil DBSCAN", "Hasil HDBSCAN"])
 with result_tab1:
     render_result("KMeans", kmeans_output, kmeans_report)
 with result_tab2:
     render_result("DBSCAN", dbscan_output, dbscan_report)
+with result_tab3:
+    render_result("HDBSCAN", hdbscan_output, hdbscan_report)

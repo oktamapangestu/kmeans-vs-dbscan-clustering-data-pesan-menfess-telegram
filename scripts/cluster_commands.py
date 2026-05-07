@@ -49,6 +49,10 @@ def build_base_args(config: Mapping[str, object]) -> list[str]:
         command.extend(["--embedding-model", _as_str(config.get("embedding_model"))])
     if _as_str(config.get("device")):
         command.extend(["--device", _as_str(config.get("device"))])
+    if _as_bool(config.get("keep_hashtags")):
+        command.append("--keep-hashtags")
+    if _as_bool(config.get("remove_emojis")):
+        command.append("--remove-emojis")
     if _as_str(config.get("stopwords")):
         command.extend(["--stopwords", _as_str(config.get("stopwords"))])
     if _as_bool(config.get("no_default_stopwords")):
@@ -89,4 +93,49 @@ def build_dbscan_command(python_bin: str, config: Mapping[str, object]) -> list[
     )
     if _as_str(config.get("dbscan_extra")).strip():
         command.extend(shlex.split(_as_str(config.get("dbscan_extra"))))
+    if _as_bool(config.get("dbscan_use_umap")):
+        command.extend(
+            [
+                "--use-umap",
+                "--umap-components",
+                str(_as_int(config.get("dbscan_umap_components"), default=10)),
+                "--umap-neighbors",
+                str(_as_int(config.get("dbscan_umap_neighbors"), default=15)),
+                "--umap-min-dist",
+                str(_as_float(config.get("dbscan_umap_min_dist"), default=0.0)),
+            ]
+        )
+    return command
+
+
+def build_hdbscan_command(python_bin: str, config: Mapping[str, object]) -> list[str]:
+    command = [python_bin, "scripts/hdbscan_text_cluster.py", *build_base_args(config)]
+    command.extend(
+        [
+            "--min-cluster-size",
+            str(_as_int(config.get("hdbscan_min_cluster_size"), default=15)),
+            "--min-samples",
+            str(_as_int(config.get("hdbscan_min_samples"), default=5)),
+            "--cluster-selection-epsilon",
+            str(_as_float(config.get("hdbscan_cluster_selection_epsilon"), default=0.0)),
+            "--output-csv",
+            _as_str(config.get("hdbscan_output")),
+            "--report",
+            _as_str(config.get("hdbscan_report")),
+        ]
+    )
+    if _as_str(config.get("hdbscan_extra")).strip():
+        command.extend(shlex.split(_as_str(config.get("hdbscan_extra"))))
+    if _as_bool(config.get("hdbscan_use_umap")):
+        command.extend(
+            [
+                "--use-umap",
+                "--umap-components",
+                str(_as_int(config.get("hdbscan_umap_components"), default=10)),
+                "--umap-neighbors",
+                str(_as_int(config.get("hdbscan_umap_neighbors"), default=15)),
+                "--umap-min-dist",
+                str(_as_float(config.get("hdbscan_umap_min_dist"), default=0.0)),
+            ]
+        )
     return command

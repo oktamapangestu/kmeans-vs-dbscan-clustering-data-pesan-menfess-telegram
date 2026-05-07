@@ -9,6 +9,7 @@ class PreparedTextDataset:
     df: pd.DataFrame
     raw_texts: list[str]
     cleaned_texts: list[str]
+    cleaned_texts_embed: list[str]
     total_rows: int
     dedup_removed: int
 
@@ -25,6 +26,7 @@ def prepare_text_dataset(
     random_state: int,
     clean_col: str,
     clean_text: Callable[[str], str],
+    clean_text_embed: Callable[[str], str] | None = None,
 ) -> PreparedTextDataset:
     df = pd.read_csv(input_path)
     if text_col not in df.columns:
@@ -65,10 +67,16 @@ def prepare_text_dataset(
     if clean_col:
         filtered_df[clean_col] = cleaned_texts
 
+    if clean_text_embed is not None:
+        cleaned_texts_embed = [clean_text_embed(t) for t in raw_texts]
+    else:
+        cleaned_texts_embed = list(cleaned_texts)
+
     return PreparedTextDataset(
         df=filtered_df,
         raw_texts=raw_texts,
         cleaned_texts=cleaned_texts,
+        cleaned_texts_embed=cleaned_texts_embed,
         total_rows=len(df),
         dedup_removed=dedup_removed,
     )
