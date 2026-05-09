@@ -1,0 +1,8 @@
+fastembed==0.8.0
+numpy==1.26.4
+onnxruntime==1.23.2
+pandas==3.0.2
+scikit-learn==1.8.0
+sentence-transformers==5.4.1
+tokenizers==0.22.2
+transformers==4.57.6

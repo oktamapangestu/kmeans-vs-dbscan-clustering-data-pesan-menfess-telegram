@@ -1,5 +1,7 @@
 import subprocess
 import sys
+import json
+from datetime import datetime
 from pathlib import Path
 import re
 
@@ -14,7 +16,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from cluster_commands import build_dbscan_command, build_hdbscan_command, build_kmeans_command
 from kmeans_text_cluster import clean_text, clean_text_for_embedding, embedding_preprocessing_steps
-from project_paths import DATA_PROCESSED_DIR, DATA_RAW_DIR, REPORTS_DIR, RESOURCES_DIR
+from project_paths import DATA_PROCESSED_DIR, DATA_RAW_DIR, REPORTS_DIR, RESOURCES_DIR, ensure_parent_dir
 
 
 st.set_page_config(page_title="Text Clustering Dashboard", layout="wide")
@@ -54,12 +56,253 @@ st.markdown(
 )
 
 
+HISTORY_PATH = REPORTS_DIR / "run_history.json"
+GENERAL_HISTORY_FIELDS = [
+    "input",
+    "text_col",
+    "min_len",
+    "min_words",
+    "limit",
+    "limit_random",
+    "drop_duplicate_texts",
+    "batch_size",
+    "sample_size",
+    "embedding_model",
+    "device",
+    "keep_hashtags",
+    "remove_emojis",
+    "stopwords",
+    "no_default_stopwords",
+]
+MODEL_HISTORY_FIELDS = {
+    "KMeans": ["k", "kmeans_output", "kmeans_report", "kmeans_extra"],
+    "DBSCAN": [
+        "eps",
+        "min_samples",
+        "dbscan_use_umap",
+        "dbscan_umap_components",
+        "dbscan_umap_neighbors",
+        "dbscan_umap_min_dist",
+        "dbscan_output",
+        "dbscan_report",
+        "dbscan_extra",
+    ],
+    "HDBSCAN": [
+        "hdbscan_min_cluster_size",
+        "hdbscan_min_samples",
+        "hdbscan_cluster_selection_epsilon",
+        "hdbscan_use_umap",
+        "hdbscan_umap_components",
+        "hdbscan_umap_neighbors",
+        "hdbscan_umap_min_dist",
+        "hdbscan_output",
+        "hdbscan_report",
+        "hdbscan_extra",
+    ],
+}
+MODEL_PATH_FIELDS = {
+    "KMeans": ("kmeans_output", "kmeans_report"),
+    "DBSCAN": ("dbscan_output", "dbscan_report"),
+    "HDBSCAN": ("hdbscan_output", "hdbscan_report"),
+}
+
+
 def csv_candidates() -> list[str]:
     patterns = [DATA_RAW_DIR.glob("*.csv"), (PROJECT_ROOT / "data" / "sample").glob("*.csv")]
     files: list[str] = []
     for pattern in patterns:
         files.extend(str(path) for path in sorted(pattern))
     return files
+
+
+def load_history() -> list[dict[str, object]]:
+    if not HISTORY_PATH.exists():
+        return []
+    try:
+        history = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(history, list):
+        return []
+    return [item for item in history if isinstance(item, dict)]
+
+
+def save_history(history: list[dict[str, object]]) -> None:
+    ensure_parent_dir(HISTORY_PATH)
+    HISTORY_PATH.write_text(json.dumps(history, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def pick_config_fields(config: dict[str, object], keys: list[str]) -> dict[str, object]:
+    return {key: config.get(key) for key in keys}
+
+
+def build_history_record(label: str, command: list[str], config: dict[str, object]) -> dict[str, object]:
+    output_key, report_key = MODEL_PATH_FIELDS[label]
+    output_path = str(config[output_key])
+    report_path = str(config[report_key])
+    report_text = load_report_text(report_path)
+    report_metrics = parse_report_metrics(report_text)
+    result_df, summary = summarize_result(output_path)
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    return {
+        "id": f"{timestamp}_{label.lower()}",
+        "timestamp": timestamp,
+        "model": label,
+        "input": str(config["input"]),
+        "text_col": str(config["text_col"]),
+        "command": command,
+        "output_csv": output_path,
+        "report_path": report_path,
+        "general_settings": pick_config_fields(config, GENERAL_HISTORY_FIELDS),
+        "model_settings": pick_config_fields(config, MODEL_HISTORY_FIELDS[label]),
+        "metrics": report_metrics,
+        "summary": summary,
+        "report_text": report_text,
+        "result_preview": result_preview_rows(result_df),
+    }
+
+
+def append_history_record(record: dict[str, object]) -> None:
+    history = load_history()
+    history.insert(0, record)
+    save_history(history)
+
+
+def history_table(records: list[dict[str, object]]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for idx, record in enumerate(records, start=1):
+        metrics = record.get("metrics", {})
+        summary = record.get("summary", {})
+        rows.append(
+            {
+                "No": idx,
+                "Waktu": record.get("timestamp", "-"),
+                "Model": record.get("model", "-"),
+                "Input": record.get("input", "-"),
+                "Silhouette": metrics.get("Silhouette", "-"),
+                "Davies-Bouldin": metrics.get("Davies-Bouldin", "-"),
+                "Clusters": metrics.get("Clusters", summary.get("clusters", "-")),
+                "Noise Rate": metrics.get("Noise Rate", "-"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_history_detail(record: dict[str, object]) -> None:
+    st.markdown("**Detail Run**")
+    download_name = (
+        f"history_{record.get('model', 'model').lower()}_"
+        f"{str(record.get('timestamp', 'run')).replace(':', '-')}"
+        ".json"
+    )
+    st.download_button(
+        "Download Detail",
+        data=json.dumps(record, indent=2, ensure_ascii=True),
+        file_name=download_name,
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    meta_df = pd.DataFrame(
+        [
+            {"Field": "Waktu", "Value": record.get("timestamp", "-")},
+            {"Field": "Model", "Value": record.get("model", "-")},
+            {"Field": "Input", "Value": record.get("input", "-")},
+            {"Field": "Kolom Teks", "Value": record.get("text_col", "-")},
+            {"Field": "Output CSV", "Value": record.get("output_csv", "-")},
+            {"Field": "Report Path", "Value": record.get("report_path", "-")},
+        ]
+    )
+    st.dataframe(meta_df, hide_index=True, use_container_width=True)
+
+    metrics = record.get("metrics", {})
+    summary = record.get("summary", {})
+    metric_rows = [{"Metric": key, "Value": value} for key, value in metrics.items()]
+    metric_rows.extend(
+        [
+            {"Metric": "rows", "Value": summary.get("rows", "-")},
+            {"Metric": "clusters", "Value": summary.get("clusters", "-")},
+            {"Metric": "noise", "Value": summary.get("noise", "-")},
+            {"Metric": "filtered_out", "Value": summary.get("filtered_out", "-")},
+        ]
+    )
+    st.markdown("**Metrics**")
+    st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
+
+    st.markdown("**General Settings**")
+    st.dataframe(
+        pd.DataFrame(
+            [{"Setting": key, "Value": value} for key, value in record.get("general_settings", {}).items()]
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.markdown("**Model Settings**")
+    st.dataframe(
+        pd.DataFrame(
+            [{"Setting": key, "Value": value} for key, value in record.get("model_settings", {}).items()]
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.markdown("**Command**")
+    st.code(" ".join(record.get("command", [])))
+
+    st.markdown("**Result Preview**")
+    result_preview = record.get("result_preview", [])
+    if result_preview:
+        st.dataframe(pd.DataFrame(result_preview), use_container_width=True)
+    else:
+        st.write("Result preview tidak tersedia.")
+
+    st.markdown("**Detail Report**")
+    report_text = str(record.get("report_text", "")).strip()
+    if report_text:
+        st.code(report_text)
+    else:
+        st.write("Detail report tidak tersedia.")
+
+
+def render_history_page() -> None:
+    st.title("History Run")
+    st.caption("Lihat riwayat skor dan setting dari setiap run model.")
+
+    records = load_history()
+    if not records:
+        st.info("Belum ada history run.")
+        return
+
+    model_options = ["Semua", "KMeans", "DBSCAN", "HDBSCAN"]
+    selected_model = st.selectbox("Filter model", options=model_options)
+    filtered_records = records if selected_model == "Semua" else [record for record in records if record.get("model") == selected_model]
+
+    if not filtered_records:
+        st.info("Belum ada history untuk filter yang dipilih.")
+        return
+
+    st.dataframe(history_table(filtered_records), hide_index=True, use_container_width=True)
+
+    record_map = {str(record.get("id", "")): record for record in filtered_records}
+    selected_record_id = st.selectbox(
+        "Pilih history",
+        options=list(record_map),
+        format_func=lambda record_id: (
+            f"{record_map[record_id].get('timestamp', '-')} | "
+            f"{record_map[record_id].get('model', '-')} | "
+            f"{Path(str(record_map[record_id].get('input', '-'))).name}"
+        ),
+    )
+
+    if st.button("Lihat Detail", use_container_width=True):
+        st.session_state["selected_history_id"] = selected_record_id
+
+    selected_id = st.session_state.get("selected_history_id")
+    if selected_id:
+        detail_record = next((record for record in records if record.get("id") == selected_id), None)
+        if detail_record is not None:
+            render_history_detail(detail_record)
 
 
 def detect_columns(path: str) -> list[str]:
@@ -198,6 +441,14 @@ def summarize_result(path: str) -> tuple[pd.DataFrame | None, dict[str, int | fl
     return df, summary
 
 
+def result_preview_rows(df: pd.DataFrame | None, *, limit: int = 100) -> list[dict[str, object]]:
+    if df is None or df.empty:
+        return []
+    preview_df = df.head(limit).copy()
+    preview_df = preview_df.where(pd.notna(preview_df), None)
+    return preview_df.to_dict(orient="records")
+
+
 def cluster_chart_data(df: pd.DataFrame | None) -> pd.DataFrame:
     if df is None or "cluster" not in df.columns:
         return pd.DataFrame(columns=["cluster", "count"])
@@ -279,6 +530,12 @@ def render_result(title: str, output_path: str, report_path: str) -> None:
         else:
             st.write("Report belum tersedia.")
 
+
+page = st.sidebar.radio("Halaman", options=["Dashboard", "History"])
+
+if page == "History":
+    render_history_page()
+    st.stop()
 
 st.title("Text Clustering Dashboard")
 st.caption("Atur parameter, jalankan KMeans/DBSCAN/HDBSCAN, lalu lihat hasil dan grafik cluster dari browser.")
@@ -392,6 +649,11 @@ python_bin = sys.executable
 kmeans_command = build_kmeans_command(python_bin, config)
 dbscan_command = build_dbscan_command(python_bin, config)
 hdbscan_command = build_hdbscan_command(python_bin, config)
+history_commands = {
+    "KMeans": kmeans_command,
+    "DBSCAN": dbscan_command,
+    "HDBSCAN": hdbscan_command,
+}
 
 st.subheader("Run")
 button_col1, button_col2, button_col3, button_col4 = st.columns(4)
@@ -422,6 +684,7 @@ if run_kmeans or run_dbscan or run_hdbscan or run_all:
         if code != 0:
             had_error = True
             break
+        append_history_record(build_history_record(label, history_commands[label], config))
 
     if had_error:
         log_placeholder.error("Ada proses yang gagal. Cek log di bawah.")

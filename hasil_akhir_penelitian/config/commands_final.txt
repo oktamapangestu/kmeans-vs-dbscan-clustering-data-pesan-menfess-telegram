@@ -1,0 +1,27 @@
+Perintah eksperimen akhir dijalankan dengan interpreter berikut:
+
+.venv/bin/python3.12
+
+1. K-Means skenario pendek
+
+.venv/bin/python3.12 scripts/kmeans_text_cluster.py --input "data/raw/cluster_0_pendek.csv" --text-col text --min-len 10 --min-words 5 --batch-size 64 --sample-size 1000 --limit 1000 --limit-random --drop-duplicate-texts --embedding-model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --stopwords "resources/stopword.txt" --k 5 --output-csv "data/processed/length_scenarios/kmeans_pendek_venv.csv" --report "reports/length_scenarios/kmeans_pendek_venv.txt"
+
+2. K-Means skenario menengah
+
+.venv/bin/python3.12 scripts/kmeans_text_cluster.py --input "data/raw/cluster_2_menengah.csv" --text-col text --min-len 10 --min-words 5 --batch-size 64 --sample-size 1000 --limit 1000 --limit-random --drop-duplicate-texts --embedding-model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --stopwords "resources/stopword.txt" --k 5 --output-csv "data/processed/length_scenarios/kmeans_menengah_venv.csv" --report "reports/length_scenarios/kmeans_menengah_venv.txt"
+
+3. K-Means skenario panjang
+
+.venv/bin/python3.12 scripts/kmeans_text_cluster.py --input "data/raw/cluster_3_panjang.csv" --text-col text --min-len 10 --min-words 5 --batch-size 64 --sample-size 1000 --limit 1000 --limit-random --drop-duplicate-texts --embedding-model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --stopwords "resources/stopword.txt" --k 5 --output-csv "data/processed/length_scenarios/kmeans_panjang_venv.csv" --report "reports/length_scenarios/kmeans_panjang_venv.txt"
+
+4. DBSCAN skenario pendek
+
+.venv/bin/python3.12 scripts/dbscan_text_cluster.py --input "data/raw/cluster_0_pendek.csv" --text-col text --min-len 10 --min-words 5 --batch-size 64 --sample-size 1000 --limit 1000 --limit-random --drop-duplicate-texts --embedding-model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --stopwords "resources/stopword.txt" --eps 0.22 --min-samples 5 --output-csv "data/processed/length_scenarios/dbscan_pendek_venv_eps022.csv" --report "reports/length_scenarios/dbscan_pendek_venv_eps022.txt"
+
+5. DBSCAN skenario menengah
+
+.venv/bin/python3.12 scripts/dbscan_text_cluster.py --input "data/raw/cluster_2_menengah.csv" --text-col text --min-len 10 --min-words 5 --batch-size 64 --sample-size 1000 --limit 1000 --limit-random --drop-duplicate-texts --embedding-model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --stopwords "resources/stopword.txt" --eps 0.22 --min-samples 5 --output-csv "data/processed/length_scenarios/dbscan_menengah_venv_eps022.csv" --report "reports/length_scenarios/dbscan_menengah_venv_eps022.txt"
+
+6. DBSCAN skenario panjang
+
+.venv/bin/python3.12 scripts/dbscan_text_cluster.py --input "data/raw/cluster_3_panjang.csv" --text-col text --min-len 10 --min-words 5 --batch-size 64 --sample-size 1000 --limit 1000 --limit-random --drop-duplicate-texts --embedding-model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 --stopwords "resources/stopword.txt" --eps 0.22 --min-samples 5 --output-csv "data/processed/length_scenarios/dbscan_panjang_venv_eps022.csv" --report "reports/length_scenarios/dbscan_panjang_venv_eps022.txt"
